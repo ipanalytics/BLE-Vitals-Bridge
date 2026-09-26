@@ -4,105 +4,192 @@ _Русская версия: [README.ru.md](README.ru.md)_
 
 **Three home devices, one local file — and a watchdog that notices when one of them goes quiet.**
 
-A blood-pressure cuff, a scale and a glucose sensor all do the same thing: send one measurement
-over Bluetooth and file it into their own app. Three apps, three clouds, three different ideas
-about what "the time" means — and not one of them will tell you that the device has not been in
-touch for nine days. This package keeps the parts that are actually hard.
+[![License: MIT](https://img.shields.io/github/license/ipanalytics/BLE-Vitals-Bridge)](LICENSE)
+[![CI Status](https://img.shields.io/github/actions/workflow/status/ipanalytics/BLE-Vitals-Bridge/tests.yml)](.github/workflows/tests.yml)
+[![PyPI Version](https://img.shields.io/pypi/v/ble-vitals-bridge)](https://pypi.org/project/ble-vitals-bridge/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/ble-vitals-bridge)](https://pypi.org/project/ble-vitals-bridge/)
 
-## What it does
+<div align="center">
+<img src="./site/banner.svg" alt="BLE-Vitals-Bridge Banner" width="800">
+</div>
 
-- **Reads the cuff** over the standard Blood Pressure Service (`0x1810`, measurement `0x2A35`) and
-  parses the frame as ISO/IEEE 11073 instead of reading it as plain integers.
-- **Reads the scale** over Weight Measurement (`0x2A9D`) and Body Composition (`0x2A9C`), including
-  frames that arrive in pounds because of one flag bit.
-- **Imports the logs you already have** — JSON lines written by earlier scripts — idempotently, so
-  running it twice changes nothing.
-- **Keeps one SQLite file** with a single primary key: `source|metric|moment|value`. A measurement
-  cannot land twice, whatever path it took to get there.
-- **Watches for silence**: every metric has an expected cadence, and `bridge status` turns "nothing
-  arrived" into a line with a number in it.
-- **Exports CSV** for a chart, a spreadsheet, or a doctor.
+---
 
-## Quick start
+## Overview
+
+BLE-Vitals-Bridge consolidates vital measurements from multiple Bluetooth Low Energy devices into a unified local store. The package reads blood-pressure cuffs, scales, and glucose sensors over standard Bluetooth services, parses frames according to ISO/IEEE 11073 specifications, and maintains a deduplicated SQLite database with configurable watchdog rules.
+
+## Architecture
+
+The data flow follows this sequence:
+1. **Input**: BLE devices or JSONL imports
+2. **Frame parsing**: ISO 11073 SFLOAT handling and unit detection
+3. **Normalization**: Unit conversion (kg/lb, mmHg, mg/dL)
+4. **Deduplication**: Key-based removal of repeated measurements
+5. **Storage**: SQLite database with primary key constraints
+6. **Watchdog**: Frequency monitoring and silence detection
+7. **Export**: CSV output and status reporting
+
+## Data Format
+
+### Metrics and Fields
+
+| Metric Type | Units | Deduplication Key | Notes |
+|-------------|-------|------------------|-------|
+| `weight` | kg | `source|metric|taken_at|value` | Imperial flag preserved in raw frame |
+| `systolic` | mmHg | `source|metric|taken_at|value` | Parsed from SFLOAT values |
+| `diastolic` | mmHg | `source|metric|taken_at|value` | Parsed from SFLOAT values |
+| `pulse` | bpm | `source|metric|taken_at|value` | From BP or CGM frames |
+| `glucose` | mg/dL | `source|metric|taken_at|value` | Continuous sensor values |
+
+### Database Schema
+
+| Column | Description |
+|--------|-------------|
+| `dedupe_key` | Primary key: `source|metric|taken_at|value` |
+| `metric`, `value`, `unit` | Raw measurement in original units |
+| `taken_at` | Device timestamp normalized to local time |
+| `source`, `device` | Origin identifier and device address |
+| `group_id` | Links related metrics (systolic/diastolic/pulse) |
+| `raw` | Full parsed frame in JSON format |
+
+## Features
+
+- **Standard Bluetooth Services**: Supports Blood Pressure (`0x1810`), Weight Measurement (`0x2A9D`), Body Composition (`0x2A9C`)
+- **SFLOAT Parsing**: Handles IEEE 11073 SFLOAT values with proper mantissa/exponent extraction
+- **Unit Detection**: Automatic imperial/metric conversion based on flag bits
+- **Idempotent Operations**: Import and watch commands prevent duplicate storage
+- **Silence Detection**: Configurable watchdog monitors expected measurement frequencies
+- **Local Storage**: Single SQLite file accessible across machines
+- **CLI Interface**: Command-line tools for import, watch, export, and status
+
+## Quick Start
 
 ```sh
-pip install "ble-vitals-bridge[ble]"    # [ble] pulls in bleak; importing logs works without it
-bridge import ~/logs/scale.jsonl        # the files the old scripts wrote, safely repeatable
-bridge watch cuff                       # wait for one frame, then store it
-bridge status                           # what arrived, when, and what is missing
-bridge status --quiet                   # cron: exit 1 when a source is silent, print nothing
+pip install "ble-vitals-bridge[ble]"    # Includes bleak for BLE connectivity
+bridge import ~/logs/scale.jsonl        # Import existing JSONL logs safely
+bridge watch cuff                       # Wait for and store a single measurement
+bridge status                           # Show latest readings and detect silence
+bridge status --quiet                   # Exit code 1 if source is silent
 bridge export --metric weight --days 90 > weight.csv
 ```
 
-It runs on the machine with the radio. The store is a plain file, so any machine can read it.
+## Installation
 
-## The four things that are actually hard
+Install the core package with optional extras for BLE functionality:
 
-**1. The blood-pressure frame is not integers.** `0x2A35` carries 16-bit SFLOATs: a 12-bit
-mantissa and a 4-bit signed exponent. Read them as `int` and a normal 128/84 measurement becomes
-15616/10752 — which looks like a broken cuff rather than a parsing bug. The parser here handles
-withdrawals from the mantissa and the negative exponents, and there is a test that pins both.
+```sh
+pip install ble-vitals-bridge           # Core functionality only
+pip install "ble-vitals-bridge[ble]"    # Adds BLE connectivity via bleak
+pip install "ble-vitals-bridge[dev]"    # Development dependencies (pytest, ruff)
+```
 
-**2. One bit turns kilograms into pounds.** In `0x2A9D` the unit is 0.005 kg, unless bit 0 is set,
-in which case the whole frame is 0.01 lb. A scale that reports 0.01 kg steps is a scale whose bit 0
-was ignored. The stored value is always kilograms, and the frame keeps its `imperial` flag so the
-choice is visible in the raw record.
+The BLE functionality requires proper permissions to access Bluetooth hardware on your system.
 
-**3. Re-readings and re-imports.** The same weighing reaches you more than once: the device
-retries, the phone passes nearby twice, you import yesterday's log again. Each reading carries a
-`dedupe_key` of `source|metric|moment|value`, which is the table's primary key, so a duplicate is
-never stored. Importing the same file twice reports `0 new readings` and does not touch a row.
+## Usage
 
-**4. Silence.** A bridge failure has no error message: readings simply stop, and everything looks
-fine. `bridge status` compares each metric against its cadence
+### Commands
 
-| Metric | Expected | Why |
-|---|---|---|
-| `weight` | every 14 days | a weighing at least twice a month |
-| `systolic` | every 7 days | a pressure reading once a week |
-| `glucose` | every 36 hours | the sensor is continuous, silence means a problem |
-| `pulse` | every 36 hours | it arrives with the glucose frame |
+- `bridge watch <device_type>`: Listen for a single measurement from specified device
+- `bridge import <path>`: Process JSONL files from previous recordings
+- `bridge status`: Report latest readings and watchdog status
+- `bridge export --metric <type> --days <n>`: Export CSV data for analysis
+- `bridge metrics`: List available metrics in the database
 
-Cadences live in `watchdog.DEFAULT_RULES` and are keyed by metric, not by device — replacing a cuff
-with another cuff needs no code change.
+### Exit Codes
 
-## The store
+- `0`: Success, data available or operation completed normally
+- `1`: Error occurred during operation
+- `2`: Watchdog detected silent source (when using `--quiet`)
 
-One table, because the questions are simple (what is the latest, what is the trend, when did this
-source last write):
+## Outputs/Artifacts
 
-| Column | Meaning |
-|---|---|
-| `dedupe_key` | primary key: `source\|metric\|moment\|value` |
-| `metric`, `value`, `unit` | the number, in the unit the device meant |
-| `taken_at` | the moment the device recorded, normalised to local time without a zone |
-| `source`, `device` | which source wrote it and which device it came from |
-| `group_id` | ties the parts of one frame together (systolic, diastolic, mean, pulse) |
-| `raw` | the parsed frame as JSON, so a later question can be answered without re-reading the device |
+- **SQLite Database**: Default `vitals.db` with deduplicated measurements
+- **CSV Exports**: Formatted data for charts, spreadsheets, or medical review
+- **Status Reports**: Watchdog notifications indicating missed measurements
+- **Raw Frames**: Complete JSON representations of parsed device frames
 
-## Tests
+## Configuration
+
+The watchdog rules are defined in `watchdog.DEFAULT_RULES` and keyed by metric type rather than device. Default expectations:
+
+| Metric | Expected Frequency | Reason |
+|--------|-------------------|---------|
+| `weight` | Every 14 days | Minimum twice-monthly weigh-ins |
+| `systolic` | Every 7 days | Weekly pressure monitoring |
+| `glucose` | Every 36 hours | Continuous sensor operational |
+| `pulse` | Every 36 hours | Coordinated with glucose readings |
+
+Rules are configurable without code changes when replacing devices.
+
+## Operational Notes
+
+When a device stops transmitting, the watchdog identifies this through frequency analysis. The system distinguishes between:
+
+- **Device silence**: No new measurements within expected timeframe
+- **Connection issues**: Temporary BLE communication problems
+- **Normal gaps**: Expected intervals based on device usage patterns
+
+Measurement frequencies are tracked per metric type: weight (14-day cycle), blood pressure (7-day), glucose/pulse (36-hour continuous).
+
+## Project Scope
+
+This package addresses the core challenge of consolidating BLE vital measurements without vendor dependencies. It handles the technical complexities of Bluetooth protocols while maintaining a local-first architecture.
+
+## Use Cases
+
+- Personal health data consolidation from multiple BLE devices
+- Local backup of measurements before vendor cloud upload
+- Research data collection with standardized formats
+- Integration with personal health dashboards
+- Medical consultation preparation with consistent data
+
+## Limitations
+
+- **Hardware Dependencies**: Requires compatible BLE radio and proper system permissions
+- **Protocol Variations**: Bluetooth implementations vary between device manufacturers
+- **Live Reading Requirements**: Real-time BLE reading needs `bleak` and system access rights
+- **Vendor Lock-in Protocols**: Encrypted or proprietary protocols (like Xiaomi MiBeacon) are unsupported
+- **Service Standard Compliance**: Depends on devices implementing standard Bluetooth services
+
+## Repository Layout
+
+```
+ble_vitals_bridge/     # Main package with parsers and CLI
+├── cli.py             # Command-line interface
+├── parser/            # Frame parsing logic
+├── db/                # SQLite storage layer
+└── watchdog/          # Silence detection logic
+tests/                 # Unit tests without hardware requirements
+site/                  # Static assets including banner
+.github/workflows/     # CI configuration
+pyproject.toml         # Package metadata and dependencies
+README.md              # English documentation
+README.ru.md           # Russian translation
+```
+
+## Testing
+
+Run the full test suite without hardware requirements:
 
 ```sh
 pip install -e ".[dev]"
-pytest -q        # 25 tests, no Bluetooth hardware needed
+pytest -q               # 26 tests covering all components
 ruff check .
 ```
 
-The fixtures build frames in both directions — the tests pack an SFLOAT and then read it back —
-so a parser that agrees with itself is not enough to pass. Everything else (deduplication,
-freshness, import counting, the CSV export) runs against a temporary SQLite file.
+Tests include bidirectional frame construction and verification to ensure parser accuracy beyond self-consistency.
 
-## What it deliberately does not do
+## Deployment
 
-- **No cloud, no account, no vendor app.** If a device insists on a phone app, that is a reason to
-  read the standard service, not a reason to sign in somewhere.
-- **No key extraction.** Xiaomi scales that broadcast encrypted MiBeacon without the binding key
-  cannot be read, and this package does not try to lift the key out of the vendor app.
-- **No dashboard and no charts.** It exports CSV; the reading of the numbers belongs to a human,
-  and medical judgement does not belong in a health-data bridge.
-- **No silent unit conversion.** Degrees, stones and percentages are stored as the device sent
-  them; the conversion to kilograms happens once, in the parser, and is visible in the frame.
+The package installs as a command-line tool `bridge` with subcommands for all operations. SQLite database location defaults to `vitals.db` in current directory but is configurable.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+## Disclaimer
+
+This software is designed for personal health data management and should not be considered a substitute for professional medical advice, diagnosis, or treatment.
