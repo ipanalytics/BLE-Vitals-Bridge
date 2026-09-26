@@ -1,0 +1,41 @@
+[project]
+name = "ble-vitals-bridge"
+version = "1.0.0"
+description = "Bluetooth vitals into one local store: a blood-pressure cuff, a scale and a CGM, with deduplication and a watchdog for silent sources"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ipanalytics" }]
+keywords = ["bluetooth", "ble", "blood-pressure", "beurer", "bm59", "scale", "glucose", "cgm", "sqlite", "health"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Home Automation",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = []
+
+[project.optional-dependencies]
+ble = ["bleak>=0.22"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+bridge = "ble_vitals_bridge.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ble_vitals_bridge"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tests"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4"]
+ignore = ["E501"]
