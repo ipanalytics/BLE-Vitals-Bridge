@@ -37,8 +37,10 @@ def readings_from_record(record: dict, source: str, device: str = "") -> list:
     what it did rather than stopping at the first unknown line.
     """
     try:
+        moment = record.get("ts") or record.get("timestamp") or record.get("moment")
         if record.get("metric") and record.get("value") is not None:
-            moment = record.get("ts") or record.get("timestamp") or record.get("moment")
+            if moment is None:
+                return []  # a row with no moment cannot be imported idempotently
             return [models.Reading(str(record["metric"]), record["value"], moment, source, device=device, raw=record)]
         if "systolic" in record or "diastolic" in record:
             return models.from_blood_pressure(record, source, device)
@@ -139,7 +141,7 @@ def watch_blood_pressure(address: str | None = None, timeout: float = 180, sourc
             lambda data: [parse_blood_pressure(data)],
         )
     )
-    return models.from_blood_pressure(frames[0], source) if frames else []
+    return models.from_blood_pressure(frames[0], source, fallback_moment=models.now_iso()) if frames else []
 
 
 def watch_scale(address: str | None = None, timeout: float = 180, source: str = "scale") -> list:
@@ -159,4 +161,4 @@ def watch_scale(address: str | None = None, timeout: float = 180, source: str = 
     if not frames:
         return []
     frame = frames[0]
-    return models.from_scale(frame, source) if "weight" in frame else []
+    return models.from_scale(frame, source, fallback_moment=models.now_iso()) if "weight" in frame else []

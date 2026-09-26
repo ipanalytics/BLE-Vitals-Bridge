@@ -64,6 +64,21 @@ def test_import_reads_the_old_logs_and_counts_what_it_cannot_read(tmp_path):
         assert again["known"] == result["inserted"]
 
 
+def test_a_log_line_without_a_moment_is_refused_not_stamped_with_now(tmp_path):
+    """The bug CI caught: a row with no moment got "now", so re-importing the file added it again."""
+    from ble_vitals_bridge import sources
+    from ble_vitals_bridge.store import Store
+
+    log = tmp_path / "no-moment.jsonl"
+    log.write_text(json.dumps({"weight": 70.0, "unit": "kg"}) + "\n", encoding="utf-8")
+    with Store(tmp_path / "db.sqlite") as store:
+        first = sources.import_jsonl(log, store)
+        second = sources.import_jsonl(log, store)
+        assert first["inserted"] == 0
+        assert first["skipped"] == 1
+        assert second["inserted"] == 0
+
+
 def test_the_watchdog_calls_a_silent_source_stale(tmp_path):
     with Store(tmp_path / "db.sqlite") as store:
         store.add([reading("weight", 70.0, (datetime.now() - timedelta(days=30)).isoformat())])

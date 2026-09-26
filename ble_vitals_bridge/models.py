@@ -95,29 +95,46 @@ class Reading:
         }
 
 
-def from_blood_pressure(frame: dict, source: str, device: str = "") -> list[Reading]:
+MOMENT_KEYS = ("timestamp", "ts", "moment", "ts_device")
+
+
+def moment_of(frame: dict, fallback: str | None = None) -> str | None:
+    """The moment a frame carries, whichever key it uses; ``fallback`` is for a live reading.
+
+    ``None`` is a meaningful answer: a log line with no moment at all cannot be stored, because a
+    reading stamped with "now" is a brand new row the next time the same file is imported.
+    """
+    for key in MOMENT_KEYS:
+        if frame.get(key):
+            return str(frame[key])
+    return fallback
+
+
+def from_blood_pressure(frame: dict, source: str, device: str = "", fallback_moment: str | None = None) -> list[Reading]:
     """A parsed frame from a BP monitor into readings, in the order a human reads them."""
-    group = f"{source}:{normalize_moment(frame.get('timestamp'))}"
+    moment = moment_of(frame, fallback_moment)
+    if moment is None:
+        return []
+    group = f"{source}:{normalize_moment(moment)}"
     out = []
     for metric, key in ((SYSTOLIC, "systolic"), (DIASTOLIC, "diastolic"), (MEAN_ARTERIAL, "map"), (PULSE, "pulse")):
         value = frame.get(key)
         if value:
-            out.append(Reading(metric, value, frame.get("timestamp"), source, device=device, group_id=group, raw=frame))
+            out.append(Reading(metric, value, moment, source, device=device, group_id=group, raw=frame))
     return out
 
 
-def from_scale(frame: dict, source: str, device: str = "") -> list[Reading]:
+def from_scale(frame: dict, source: str, device: str = "", fallback_moment: str | None = None) -> list[Reading]:
     """Weight and, when the scale reports it, body fat. Imperial frames arrive already in kg."""
-    group = f"{source}:{normalize_moment(frame.get('ts_device'))}"
+    moment = moment_of(frame, fallback_moment)
+    if moment is None:
+        return []
+    group = f"{source}:{normalize_moment(moment)}"
     out = []
     if frame.get("weight"):
-        out.append(
-            Reading(WEIGHT, frame["weight"], frame.get("ts_device"), source, device=device, group_id=group, raw=frame)
-        )
-    for key, metric in (("body_fat", BODY_FAT), ("fat_percent", BODY_FAT)):
+        out.append(Reading(WEIGHT, frame["weight"], moment, source, device=device, group_id=group, raw=frame))
+    for key in ("body_fat", "fat_percent"):
         if frame.get(key):
-            out.append(
-                Reading(metric, frame[key], frame.get("ts_device"), source, device=device, group_id=group, raw=frame)
-            )
+            out.append(Reading(BODY_FAT, frame[key], moment, source, device=device, group_id=group, raw=frame))
             break
     return out
